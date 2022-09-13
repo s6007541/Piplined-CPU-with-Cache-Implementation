@@ -1,0 +1,387 @@
+From 21db2324eb782d4f9bdd88e1cfd604e97eed3146 Mon Sep 17 00:00:00 2001
+From: kangwoosukeq <kangwoosuk1@gmail.com>
+Date: Mon, 30 May 2022 23:53:54 +0900
+Subject: [PATCH] patch
+
+---
+ .gitignore             |  3 +-
+ src/CFG.ml             | 60 ++++++++++++++++++++++++---------------
+ src/analyzer.ml        | 64 +++++++++++++++++-------------------------
+ src/constraint.ml      |  5 ++++
+ src/dune               |  2 +-
+ src/frontend.ml        | 63 +++++++++++++++++++++++++++++++++++++++++
+ src/main.ml            | 16 ++++-------
+ test/dune              | 13 +++++++++
+ test/example3.c        | 13 +++++++++
+ test/example3.expected |  1 +
+ 10 files changed, 165 insertions(+), 75 deletions(-)
+ create mode 100644 src/frontend.ml
+ create mode 100644 test/example3.c
+ create mode 100644 test/example3.expected
+
+diff --git a/.gitignore b/.gitignore
+index 5eb3ff3..0403e9c 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -26,7 +26,8 @@ _build/
+ analyzer
+ 
+ # debug
+-**/tuples.txt
++result.txt
++cfg.txt
+ 
+ # latex
+ *.aux
+diff --git a/src/CFG.ml b/src/CFG.ml
+index b96b65c..8a698d6 100644
+--- a/src/CFG.ml
++++ b/src/CFG.ml
+@@ -57,7 +57,7 @@ module Command = struct
+     | Assign (l, var, e) -> F.fprintf fmt "%a: %s = %a" pp_label l var pp_exp e
+     | Source (l, var) -> F.fprintf fmt "%a: %s = source()" pp_label l var
+     | Sanitizer (l, var, e) ->
+-        F.fprintf fmt "%a: %s = sanitize(%a)" pp_label l var pp_exp e
++        F.fprintf fmt "%a: %s = sanitizer(%a)" pp_label l var pp_exp e
+     | Sink (l, e) -> F.fprintf fmt "%a: sink(%a)" pp_label l pp_exp e
+     | Skip l -> F.fprintf fmt "%a: skip" pp_label l
+     | Branch l -> F.fprintf fmt "%a: branch" pp_label l
+@@ -109,28 +109,22 @@ module Node = struct
+   let pp = Command.pp
+ end
+ 
+-class flattenVisitor =
+-  object
+-    inherit Cil.nopCilVisitor
+-
+-    method! vblock b =
+-      let new_bstmts =
+-        List.fold_left
+-          (fun bstmts stmt ->
+-            match stmt.Cil.skind with
+-            | Cil.Instr [] when stmt.labels <> [] -> stmt :: bstmts
+-            | Cil.Instr instrs ->
+-                (List.map Cil.mkStmtOneInstr instrs |> List.rev) @ bstmts
+-            | _ -> stmt :: bstmts)
+-          [] b.Cil.bstmts
+-      in
+-      b.Cil.bstmts <- List.rev new_bstmts;
+-      Cil.DoChildren
+-  end
+-
+-include Graph.Persistent.Digraph.ConcreteBidirectional (Node)
+-
+-let of_cfile cil =
++module G = Graph.Persistent.Digraph.ConcreteBidirectional (Node)
++
++type t = G.t
++
++let add_edge = G.add_edge
++
++let empty = G.empty
++
++let iter_edges = G.iter_edges
++
++let fold_edges = G.fold_edges
++
++let fold_vertex = G.fold_vertex
++
++let of_cfile file =
++  let cil = Frontend.parse file in
+   match
+     Cil.foldGlobals cil
+       (fun result glob ->
+@@ -154,3 +148,23 @@ let pp fmt g =
+   iter_edges
+     (fun src dst -> F.fprintf fmt "%a -> %a\n" Node.pp src Node.pp dst)
+     g
++
++let print cfg =
++  let oc = open_out "cfg.txt" in
++  F.fprintf (F.formatter_of_out_channel oc) "%a" pp cfg;
++  close_out oc
++
++let num_of_assignments cfg =
++  fold_vertex
++    (fun node cnt -> match node with Command.Assign _ -> cnt + 1 | _ -> cnt)
++    cfg 0
++
++let num_of_obvious_bugs cfg =
++  fold_edges
++    (fun src dst cnt ->
++      match (src, dst) with
++      | Command.Source (_, var), Command.Sink (_, e)
++        when Command.get_vars e |> List.mem var ->
++          cnt + 1
++      | _ -> cnt)
++    cfg 0
+diff --git a/src/analyzer.ml b/src/analyzer.ml
+index c108de0..eb908dc 100644
+--- a/src/analyzer.ml
++++ b/src/analyzer.ml
+@@ -6,69 +6,55 @@ module ConstraintSet = Constraint.Set
+    Extracting Basic Facts
+  * ************************************** *)
+ 
+-let add_cedge src dst set = failwith "Not implemented"
++let extract_cedge src dst set = failwith "Not implemented"
+ 
+-let add_source node set = failwith "Not implemented"
++let extract_source node set = failwith "Not implemented"
+ 
+-let add_sanitizer node set = failwith "Not implemented"
++let extract_sanitizer node set = failwith "Not implemented"
+ 
+-let add_sink node set = failwith "Not implemented"
++let extract_sink node set = failwith "Not implemented"
+ 
+-let add_def node set = failwith "Not implemented"
++let extract_def node set = failwith "Not implemented"
+ 
+-let add_use node set = failwith "Not implemented"
++let extract_use node set = failwith "Not implemented"
+ 
+-let extract cfg = failwith "Not implemented"
++let extract_kill node1 node2 set = failwith "Not implemented"
++
++let extract : CFG.t -> ConstraintSet.t = failwith "Not implemented"
+ 
+ (* ************************************** *
+    Rules for Reaching Definition Analysis
+  * ************************************** *)
+ 
+-let derive_kill cs = failwith "Not implemented"
++(* Def(a, _) => Out(a, a) *)
++let derive_out1 cs = failwith "Not implemented"
+ 
+-let derive_in cs = failwith "Not implemented"
++(* In(a, b) ^ !Kill(a, b) => Out(a, b) *)
++let derive_out2 cs = failwith "Not implemented"
+ 
+-let derive_out cs = failwith "Not implemented"
++(* Out(a, b) ^ CEdge(a, c) => In(c, b) *)
++let derive_in cs = failwith "Not implemented"
+ 
+ (* ************************************** *
+    Rules for Taint Analysis
+  * ************************************** *)
+ 
+ (* CEdge(a, b) => CPath(a, b) *)
+-let generate_cpath cs =
+-  ConstraintSet.fold
+-    (fun c s ->
+-      match c with
+-      | Constraint.CEdge (v1, v2) ->
+-          ConstraintSet.add (Constraint.CPath (v1, v2)) s
+-      | _ -> s)
+-    cs cs
++let derive_cpath1 cs = failwith "Not implemented"
+ 
+ (* CPath(a, b) ^ CEdge(b, c) => CPath(a, c) *)
+-let rec populate_cpath cs =
+-  let new_cs =
+-    ConstraintSet.fold
+-      (fun c1 s ->
+-        match c1 with
+-        | Constraint.CPath (src1, dst1) ->
+-            ConstraintSet.fold
+-              (fun c2 s ->
+-                match c2 with
+-                | Constraint.CEdge (src2, dst2) when dst1 = src2 ->
+-                    ConstraintSet.add (Constraint.CPath (src1, dst2)) s
+-                | _ -> s)
+-              s s
+-        | _ -> s)
+-      cs cs
+-  in
+-  if new_cs = cs then new_cs else populate_cpath new_cs
+-
+-let derive_cpath cs = cs |> generate_cpath |> populate_cpath
++let derive_cpath2 cs = failwith "Not implemented"
+ 
++(* In(a, b) ^ Use(a, v) ^ Def(b, v) => Edge(b, a) *)
+ let derive_edge cs = failwith "Not implemented"
+ 
+-let derive_path cs = failwith "Not implemented"
++(* Source(a) ^ Edge(a, b) => Path(a, b) *)
++let derive_path1 cs = failwith "Not implemented"
++
++(* Path(a, b) ^ Edge(b, c) ^ !Sanitizer(c) => Path(a, c) *)
++let derive_path2 cs = failwith "Not implemented"
+ 
++(* Path(a, b) ^ Sink(b) => Alarm(a, b) *)
+ let derive_alarm cs = failwith "Not implemented"
+ 
+-let solve const_set = failwith "Not implemented"
++let rec solve const_set = failwith "Not implemented"
+diff --git a/src/constraint.ml b/src/constraint.ml
+index b8431e0..5408dfa 100644
+--- a/src/constraint.ml
++++ b/src/constraint.ml
+@@ -46,6 +46,11 @@ module Set = struct
+   include Set.Make (Constraint)
+ 
+   let pp fmt cs = iter (fun c -> F.fprintf fmt "%a\n" Constraint.pp c) cs
++
++  let print set =
++    let oc = open_out "result.txt" in
++    F.fprintf (F.formatter_of_out_channel oc) "%a" pp set;
++    close_out oc
+ end
+ 
+ include Constraint
+diff --git a/src/dune b/src/dune
+index ca7a3e9..760c496 100644
+--- a/src/dune
++++ b/src/dune
+@@ -1,4 +1,4 @@
+ (executable
+  (name main)
+- (modules main CFG constraint analyzer)
++ (modules main CFG constraint analyzer frontend)
+  (libraries str ocamlgraph cil))
+diff --git a/src/frontend.ml b/src/frontend.ml
+new file mode 100644
+index 0000000..58f5c8f
+--- /dev/null
++++ b/src/frontend.ml
+@@ -0,0 +1,63 @@
++let rec remove_temp instrs =
++  match instrs with
++  | Cil.Call (Some l, f, es, loc) :: Cil.Set (x, Cil.Lval r, _) :: t when l = r
++    ->
++      Cil.Call (Some x, f, es, loc) :: remove_temp t
++  | h :: t -> h :: remove_temp t
++  | [] -> []
++
++class removeTempVisitor =
++  object
++    inherit Cil.nopCilVisitor
++
++    method! vblock b =
++      let new_bstmts =
++        List.fold_left
++          (fun bstmts stmt ->
++            match stmt.Cil.skind with
++            | Cil.Instr [] when stmt.labels <> [] -> stmt :: bstmts
++            | Cil.Instr instrs ->
++                stmt.Cil.skind <- Cil.Instr (remove_temp instrs);
++                stmt :: bstmts
++            | _ -> stmt :: bstmts)
++          [] b.Cil.bstmts
++      in
++      b.Cil.bstmts <- List.rev new_bstmts;
++      Cil.DoChildren
++  end
++
++class flattenVisitor =
++  object
++    inherit Cil.nopCilVisitor
++
++    method! vblock b =
++      let new_bstmts =
++        List.fold_left
++          (fun bstmts stmt ->
++            match stmt.Cil.skind with
++            | Cil.Instr [] when stmt.labels <> [] -> stmt :: bstmts
++            | Cil.Instr instrs ->
++                (List.map Cil.mkStmtOneInstr instrs |> List.rev) @ bstmts
++            | _ -> stmt :: bstmts)
++          [] b.Cil.bstmts
++      in
++      b.Cil.bstmts <- List.rev new_bstmts;
++      Cil.DoChildren
++  end
++
++let initialize () =
++  Cil.initCIL ();
++  Cabs2cil.doCollapseCallCast := true
++
++let prepare cfile =
++  Cil.iterGlobals cfile (function
++    | Cil.GFun (fd, _) -> Cil.prepareCFG fd
++    | _ -> ());
++  Cil.visitCilFile (new removeTempVisitor) cfile;
++  Cil.visitCilFile (new flattenVisitor) cfile
++
++let parse cfile =
++  initialize ();
++  let cil = Frontc.parse cfile () in
++  prepare cil;
++  cil
+diff --git a/src/main.ml b/src/main.ml
+index c5e4f31..e7d9977 100644
+--- a/src/main.ml
++++ b/src/main.ml
+@@ -16,16 +16,10 @@ let main argv =
+   if Array.length argv <> 2 then (
+     prerr_endline "analyzer: You must specify one C file";
+     exit 1);
+-  Cil.initCIL ();
+-  Cabs2cil.doCollapseCallCast := true;
+-  let cfile = Frontc.parse argv.(1) () in
+-  Cil.iterGlobals cfile (function
+-    | Cil.GFun (fd, _) -> Cil.prepareCFG fd
+-    | _ -> ());
+-  Cil.visitCilFile (new CFG.flattenVisitor) cfile;
+-  let solved = CFG.of_cfile cfile |> Analyzer.extract |> Analyzer.solve in
+-  let ofmt = "tuples.txt" |> open_out |> F.formatter_of_out_channel in
+-  F.fprintf ofmt "%a" ConstraintSet.pp solved;
+-  report solved
++  let cfg = CFG.of_cfile argv.(1) in
++  CFG.print cfg;
++  let result = cfg |> Analyzer.extract |> Analyzer.solve in
++  ConstraintSet.print result;
++  report result
+ 
+ let _ = main Sys.argv
+diff --git a/test/dune b/test/dune
+index 3d68287..aed8114 100644
+--- a/test/dune
++++ b/test/dune
+@@ -23,3 +23,16 @@
+  (alias runtest)
+  (action
+   (diff example2.expected example2.output)))
++
++(rule
++ (deps example3.c)
++ (targets example3.output)
++ (action
++  (with-stdout-to
++   example3.output
++   (run ../analyzer example3.c))))
++
++(rule
++ (alias runtest)
++ (action
++  (diff example3.expected example3.output)))
+diff --git a/test/example3.c b/test/example3.c
+new file mode 100644
+index 0000000..01bab70
+--- /dev/null
++++ b/test/example3.c
+@@ -0,0 +1,13 @@
++#include "homework.h"
++
++int main() {
++  int x = source();
++  int y;
++  if (x > 0) {
++    y = 1;
++  } else {
++    y = sanitizer(x);
++  }
++  sink(x); // bug
++  return 0;
++}
+diff --git a/test/example3.expected b/test/example3.expected
+new file mode 100644
+index 0000000..de195c4
+--- /dev/null
++++ b/test/example3.expected
+@@ -0,0 +1 @@
++Potential Error @ example3.c:4 (example3.c:11)
+-- 
+2.25.1
+
